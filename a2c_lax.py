@@ -26,7 +26,6 @@ class Model(object):
         self.step_policy_model = deepcopy(self.train_policy_model)
         # self.step_policy_model = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-3)
 
-
     def get_cv_grads(self, obs, actions, rewards, vf_in, values, net_mean, net_std):
         advs = rewards - values
 
@@ -46,7 +45,7 @@ class Model(object):
             params.backward(cg, create_graph=True, retain_graph=True)
         self.train_policy_model.cv_optim.step()
 
-    def get_policy_grads(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
+    def get_policy_grads_(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
         advs = rewards - value
 
         # net_mean, net_std = self.train_policy_model.policy(obs)
@@ -55,8 +54,8 @@ class Model(object):
         ddiff_loss = torch.mean(cv, dim=0)
         # ddiff_loss = cv / cv.shape[0] + 2.
 
-        dlogp_mean = (actions - net_mean) / torch.square(net_std)
-        dlogp_std = -1 / net_std + 1 / torch.pow(net_std, 3) * torch.square(actions - net_mean)
+        dlogp_mean = (actions.detach() - net_mean) / torch.square(net_std)
+        dlogp_std = -1 / net_std + 1 / torch.pow(net_std, 3) * torch.square(actions.detach() - net_mean)
 
         # pi_loss_mean = -((advs[:,None] - cv) * dlogp_mean) / advs.shape[0]
         # pi_loss_std = -((advs[:,None] - cv) * dlogp_std) / advs.shape[0]
@@ -94,6 +93,38 @@ class Model(object):
 
         # pg_grads_mean = [pg - dg for pg, dg in zip(pg_grads_mean, ddiff_grads_mean)]
         # pg_grads_std = [pg - dg for pg, dg in zip(pg_grads_std, ddiff_grads_std)]
+
+        pg_grads = pg_grads_std + pg_grads_mean
+
+        return pg_grads
+
+    def get_policy_grads(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
+        advs = rewards - value
+
+        # net_mean, net_std = self.train_policy_model.policy(obs)
+        # actions = torch.distributions.Normal(net_mean, net_std).rsample()
+        cv = self.step_policy_model.cv_net(torch.cat([vf_in, actions], dim=1))
+        ddiff_loss = torch.mean(cv, dim=0)
+
+        log_prob = torch.distributions.Normal(net_mean, net_std).log_prob(actions.detach())
+        dlog_prob = -((advs[:, None] - cv) * log_prob).mean(dim=0)
+
+        pg_grads_mean = torch.autograd.grad(dlog_prob, self.step_policy_model.policy.net.parameters(),
+                                            grad_outputs=torch.ones_like(dlog_prob),
+                                            create_graph=True, retain_graph=True)
+        pg_grads_std = torch.autograd.grad(dlog_prob, self.step_policy_model.policy.log_std,
+                                           grad_outputs=torch.ones_like(dlog_prob),
+                                           create_graph=True, retain_graph=True)
+
+        ddiff_grads_mean = torch.autograd.grad(ddiff_loss, self.step_policy_model.policy.net.parameters(),
+                                               grad_outputs=torch.ones_like(ddiff_loss),
+                                               create_graph=True, retain_graph=True)
+        ddiff_grads_std = torch.autograd.grad(ddiff_loss, self.step_policy_model.policy.log_std,
+                                              grad_outputs=torch.ones_like(ddiff_loss),
+                                              create_graph=True, retain_graph=True)
+
+        pg_grads_mean = [pg - dg for pg, dg in zip(pg_grads_mean, ddiff_grads_mean)]
+        pg_grads_std = [pg - dg for pg, dg in zip(pg_grads_std, ddiff_grads_std)]
 
         pg_grads = pg_grads_std + pg_grads_mean
 
@@ -156,7 +187,7 @@ class RolloutRunner(object):
             scaled_act = np.clip(scaled_act, a_min=self.env.action_space.low, a_max=self.env.action_space.high)
             ob, reward, done, _ = self.env.step(scaled_act)
             # ob, reward, done, _ = self.env.step(to_npy(sampled_ac))
-            # env.render()
+            env.render()
 
             if self.obfilter: ob = self.obfilter(ob.squeeze())
             ob = to_torch(ob)
@@ -200,7 +231,7 @@ class RolloutRunner(object):
         return path, vtarget, value, adv_GAE
 
 def learn(env: gym.Env, seed, total_steps=int(10e6),
-          cv_opt_epochs=25, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
+          cv_opt_epochs=2, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
           kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2):
 
     # env.seed(seed)
@@ -279,7 +310,7 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
         x = x.detach()
 
         vf_loss = model.update_vf(x, rewards_n)
-        if lax and False:
+        if lax:
             pg = model.get_policy_grads(ob_no, action_na, rewards_n, x, values_n, oldac_mean, oldac_std)
             model.update_policy(pg)
 
@@ -346,4 +377,4 @@ if __name__ == '__main__':
     act_dim = env.action_space.shape[0]
     policy = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-4)
 
-    learn(env, 1337, obfilter=True, tsteps_per_batch=3000, lax=False)
+    learn(env, 1337, obfilter=True, tsteps_per_batch=3000, lax=True)
