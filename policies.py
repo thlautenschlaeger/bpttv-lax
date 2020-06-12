@@ -11,11 +11,14 @@ class MLP(nn.Module):
                      elu=nn.ELU())
 
         self.layer = nn.Linear(in_dim, n_hidden)
+        self.layer2 = nn.Linear(n_hidden, n_hidden)
         self.out = nn.Linear(n_hidden, out_dim)
         self.nonlin = nlist[nonlin]
 
     def forward(self, x, **kwargs):
         x = self.layer(x)
+        x = self.nonlin(x)
+        x = self.layer2(x)
         x = self.nonlin(x)
         x = self.out(x)
 
@@ -29,6 +32,8 @@ class GaussianPolicy(nn.Module):
         super(GaussianPolicy, self).__init__()
 
         self.net = MLP(in_dim, out_dim, n_hidden, nonlin)
+        # torch.nn.init.uniform_(self.net.out.weight, 0., 0.1)
+        # torch.nn.init.uniform_(self.net.out.bias, 0., 0.1)
         self.log_std = nn.Parameter(torch.ones(1, out_dim) * torch.tensor(std).log())
 
     def forward(self, x, **kwargs):
@@ -81,4 +86,10 @@ class LaxPolicyModel:
         act_mean = path["act_mean"]
         act_std = path["act_std"]
         x = torch.cat([path['observation'], act_mean, act_std, al, torch.ones((path_len, 1))], dim=1)
-        return x
+        return x.detach()
+
+    def compute_kl(self, obs, old_act_mu, old_act_std):
+        params = self.policy(obs)
+        old_dist = torch.distributions.Normal(old_act_mu, old_act_std)
+        new_dist = torch.distributions.Normal(*params)
+        return torch.distributions.kl.kl_divergence(old_dist, new_dist).mean()
