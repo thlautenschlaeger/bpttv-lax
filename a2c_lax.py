@@ -231,7 +231,7 @@ class RolloutRunner(object):
         return path, vtarget, value, adv_GAE
 
 def learn(env: gym.Env, seed, total_steps=int(10e6),
-          cv_opt_epochs=2, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
+          cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
           kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2):
 
     # env.seed(seed)
