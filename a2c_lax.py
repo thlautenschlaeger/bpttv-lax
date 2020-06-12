@@ -3,6 +3,8 @@ import gym
 import numpy as np
 from copy import deepcopy
 
+from quanser_robots import GentlyTerminating
+
 from common.filters import ZFilter
 from common.plot import plt_expected_cum_reward
 from policies import LaxPolicyModel
@@ -199,21 +201,6 @@ class RolloutRunner(object):
         self._num_rollouts += 1
         self._num_steps += len(rewards)
 
-        # np.random.seed(1337)
-        # obs = np.random.random((200, 6)).astype('f')
-        # rewards = np.random.random(200).astype('f')
-        # acts = np.random.random((200, 1)).astype('f')
-        # act_dist = np.random.random((200, 2)).astype('f')
-        # ac_dist_mean = act_dist[:, 0]
-        # ac_dist_std = act_dist[:, 1]
-        # logps = np.random.random(200).astype('f')
-        #
-        #
-        # path = {"observation": torch.tensor(obs), "terminated": done,
-        #         "reward": torch.tensor(rewards), "action": torch.tensor(acts),
-        #         "act_mean": torch.tensor(ac_dist_mean)[:,None], "act_std": torch.tensor(ac_dist_std)[:,None],
-        #         "logp": torch.tensor(logps)}
-
         path = {"observation": torch.stack(obs), "terminated": done,
                 "reward": torch.tensor(rewards), "action": torch.stack(acts),
                 "act_mean": torch.stack(ac_dist_mean), "act_std": torch.stack(ac_dist_std),
@@ -221,8 +208,6 @@ class RolloutRunner(object):
 
         rew_t = path["reward"]
         value = self.step_policy_model.predict_value(path).detach()
-        # np.random.seed(1337)
-        # value = to_torch(np.random.random(200).astype('f'))
         vtarget = to_torch((calc.discount(np.append(to_npy(rew_t), 0.0 if path["terminated"] else value[-1]), self.gamma)[:-1]).copy())
         vpred_t = torch.cat([value, torch.zeros([1])]) if path["terminated"] else torch.cat([value, value[-1]])
         delta_t = rew_t + self.gamma * vpred_t[1:] - vpred_t[:-1]
@@ -361,6 +346,8 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
         model.step_policy_model.policy.load_state_dict(model.train_policy_model.policy.state_dict())
         # model.step_policy_model.cv_net.load_state_dict(model.train_policy_model.cv_net.state_dict())
         model.step_policy_model.vf_net.load_state_dict(model.train_policy_model.vf_net.state_dict())
+        model.step_policy_model.policy_optim.zero_grad()
+        model.train_policy_model.policy_optim.zero_grad()
 
         plot_path = '/Users/kek/Documents/informatik/master/semester_3/thesis/code/bpttv-lax/evals/plots'
         plt_expected_cum_reward(plot_path, exp_rews_means, exp_rews_stds)
@@ -371,10 +358,13 @@ if __name__ == '__main__':
 
     seed = 42
     set_global_seeds(seed)
-    env = gym.make('Pendulum-v0')
+    # env = gym.make('Pendulum-v0')
+    env = GentlyTerminating(gym.make('CartpoleStabShort-v0'))
+    # env = GentlyTerminating(gym.make('Qube-100-v0'))
+
     env.seed(seed)
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
     policy = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-4)
 
-    learn(env, 1337, obfilter=True, tsteps_per_batch=3000, lax=True)
+    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, lax=True)

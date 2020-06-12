@@ -20,5 +20,6 @@ def plt_expected_cum_reward(path, expected_reward, std):
     ax.grid(alpha=0.5, linestyle='-')
 
 
-    fig.savefig(path+'/reward_lax_True_cv_mins_3000_act_detach-2opt_steps.png')
+    fig.savefig(path+'/reward_lax_True_cv_mins_2500_act_detach-5opt_cartpole.png')
+    plt.clf()
     plt.close('all')
