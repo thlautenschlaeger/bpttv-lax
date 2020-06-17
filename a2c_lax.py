@@ -108,8 +108,12 @@ class Model(object):
         cv = self.step_policy_model.cv_net(torch.cat([vf_in, actions], dim=1))
         ddiff_loss = torch.mean(cv, dim=0)
 
-        log_prob = torch.distributions.Normal(net_mean, net_std).log_prob(actions.detach())
-        dlog_prob = -((advs[:, None] - cv) * log_prob).mean(dim=0)
+        dist = torch.distributions.Normal(net_mean, net_std)
+
+        log_prob = dist.log_prob(actions.detach())
+        entropy = dist.entropy()
+
+        dlog_prob = -((advs[:, None] - cv) * log_prob).mean(dim=0) - entropy.mean(0) * 0.01
 
         pg_grads_mean = torch.autograd.grad(dlog_prob, self.step_policy_model.policy.net.parameters(),
                                             grad_outputs=torch.ones_like(dlog_prob),
@@ -154,7 +158,8 @@ class Model(object):
 
 class RolloutRunner(object):
 
-    def __init__(self, env: gym.Env, policy_model: LaxPolicyModel, max_path_len, gamma=0.99, lamb=0.97, obfilter=None):
+    def __init__(self, env: gym.Env, policy_model: LaxPolicyModel, max_path_len, gamma=0.99, lamb=0.97, obfilter=None,
+                 animate=False):
         self.env = env
         self.step_policy_model = policy_model
         self.max_path_len = max_path_len
@@ -162,6 +167,7 @@ class RolloutRunner(object):
         self.lamb = lamb
         self._num_rollouts = 0
         self._num_steps = 0
+        self.animate = animate
 
         self.obfilter = obfilter
 
@@ -188,8 +194,8 @@ class RolloutRunner(object):
             scaled_act = self.env.action_space.low + (to_npy(sampled_ac) + 1.) * 0.5 * (self.env.action_space.high - self.env.action_space.low)
             scaled_act = np.clip(scaled_act, a_min=self.env.action_space.low, a_max=self.env.action_space.high)
             ob, reward, done, _ = self.env.step(scaled_act)
-            # ob, reward, done, _ = self.env.step(to_npy(sampled_ac))
-            env.render()
+            if self.animate:
+                env.render()
 
             if self.obfilter: ob = self.obfilter(ob.squeeze())
             ob = to_torch(ob)
@@ -215,20 +221,23 @@ class RolloutRunner(object):
 
         return path, vtarget, value, adv_GAE
 
+
 def learn(env: gym.Env, seed, total_steps=int(10e6),
           cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
-          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2):
+          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False):
 
-    # env.seed(seed)
+    set_global_seeds(seed)
+    env.seed(seed)
 
     obfilter = ZFilter(env.observation_space.shape) if obfilter else None
 
     max_pathlength = env.spec.max_episode_steps
-    obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.shape[0]
+    obs_dim = policy.obs_dim
+    act_dim = policy.act_dim
 
     model = Model(obs_dim, act_dim, cv_opt_epochs, vf_opt_epochs)
-    runner = RolloutRunner(env, model.step_policy_model, max_pathlength, gamma=gamma, lamb=lamb, obfilter=obfilter)
+    runner = RolloutRunner(env, model.step_policy_model, max_pathlength, gamma=gamma, lamb=lamb, obfilter=obfilter,
+                           animate=animate)
 
     tsteps_so_far = 0
     episode = 0
@@ -289,7 +298,7 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
         exp_rews_means.append(mean_reward)
         exp_rews_stds.append(std_reward)
 
-        print("Expected reward: {} +- {}".format(mean_reward, std_reward))
+        print("Expected reward: {} ± {}".format(mean_reward, std_reward))
 
         x = torch.cat([model.step_policy_model.preproc(p) for p in paths])
         x = x.detach()
@@ -310,12 +319,12 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
                 model.update_cv(cv_gs)
         else:
             adv = rewards_n - values_n
-            # action_na = action_na
-            # oldac_mean, oldac_std = model.step_policy_model.policy(ob_no)
-            # action_na = torch.randn(oldac_std.shape) * oldac_std + oldac_mean
             # action is detached
-            log_probs_n = - torch.sum(torch.log(oldac_std), dim=1) - 0.5 * torch.log(torch.tensor(2.0*np.pi))*act_dim - 0.5 * torch.sum(torch.square(oldac_mean - action_na.detach()) / (torch.square(oldac_std)), dim=1)
-            ploss = -(adv * log_probs_n).mean(0)
+            log_probs_n = - torch.sum(torch.log(oldac_std), dim=1) - 0.5 * torch.log(
+                torch.tensor(2.0 * np.pi)) * act_dim - 0.5 * torch.sum(
+                torch.square(oldac_mean - action_na.detach()) / (torch.square(oldac_std)), dim=1)
+            entropy = torch.distributions.Normal(oldac_mean, oldac_std).entropy()
+            ploss = -(adv * log_probs_n).mean(0) - entropy.mean() * 0.01
 
             pg = torch.autograd.grad(ploss, model.step_policy_model.policy.parameters(),
                                      retain_graph=True, create_graph=True)
@@ -359,12 +368,17 @@ if __name__ == '__main__':
     seed = 42
     set_global_seeds(seed)
     # env = gym.make('Pendulum-v0')
-    env = GentlyTerminating(gym.make('CartpoleStabShort-v0'))
+    # env = GentlyTerminating(gym.make('CartpoleStabShort-v0'))
     # env = GentlyTerminating(gym.make('Qube-100-v0'))
+    # env = GentlyTerminating(gym.make('CartpoleSwingShort-v0'))
+    env = GentlyTerminating(gym.make('LunarLanderContinuous-v2'))
+    # env = GentlyTerminating(gym.make('BipedalWalker-v2'))
+    # env = GentlyTerminating(gym.make('BipedalWalkerHardcore-v2'))
+    # env = GentlyTerminating(gym.make('HalfCheetah-v3'))
 
     env.seed(seed)
     obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.shape[0]
-    policy = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-4)
+    act_dim = env.action_space.n if hasattr(env.action_space, 'n') else env.action_space.shape[0]
+    policy = LaxPolicyModel(obs_dim, act_dim, p_hidden=64, vf_hidden=64, cv_hidden=64, p_lr=1e-4)
 
-    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, lax=True)
+    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, cv_opt_epochs=25, lax=True, gamma=0.97, lamb=0.99, animate=True)

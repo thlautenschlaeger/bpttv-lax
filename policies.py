@@ -46,9 +46,13 @@ class GaussianPolicy(nn.Module):
 
 class LaxPolicyModel:
 
-    def __init__(self, obs_dim, act_dim, p_lr=1e-4, vf_lr=1e-3, cv_lr=1e-3):
+    def __init__(self, obs_dim, act_dim, p_hidden=64, vf_hidden=64, cv_hidden=64, p_lr=1e-4, vf_lr=1e-3, cv_lr=1e-3):
         self.obs_dim = obs_dim
         self.act_dim = act_dim
+
+        self.p_hidden=p_hidden
+        self.vf_hidden = vf_hidden
+        self.cv_hidden = cv_hidden
         self.p_lr = p_lr
         self.vf_lr = vf_lr
         self.cv_lr = cv_lr
@@ -56,9 +60,9 @@ class LaxPolicyModel:
         self.cv_in_dim = self.vf_in_dim + self.act_dim
         self.policy_in_dim = self.obs_dim * 2
 
-        self.cv_net = MLP(in_dim=self.cv_in_dim, out_dim=1, n_hidden=64, nonlin='elu')
-        self.vf_net = MLP(in_dim=self.vf_in_dim, out_dim=1, n_hidden=64, nonlin='elu')
-        self.policy = GaussianPolicy(in_dim=self.policy_in_dim, n_hidden=64, out_dim=self.act_dim, nonlin='tanh')
+        self.cv_net = MLP(in_dim=self.cv_in_dim, out_dim=1, n_hidden=cv_hidden, nonlin='elu')
+        self.vf_net = MLP(in_dim=self.vf_in_dim, out_dim=1, n_hidden=vf_hidden, nonlin='elu')
+        self.policy = GaussianPolicy(in_dim=self.policy_in_dim, n_hidden=p_hidden, out_dim=self.act_dim, nonlin='tanh')
 
         self.cv_optim = torch.optim.Adam(self.cv_net.parameters(), lr=self.cv_lr)
         self.vf_optim = torch.optim.Adam(self.vf_net.parameters(), lr=self.vf_lr)
