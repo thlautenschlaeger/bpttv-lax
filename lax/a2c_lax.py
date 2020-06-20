@@ -7,7 +7,7 @@ from quanser_robots import GentlyTerminating
 
 from common.filters import ZFilter
 from common.plot import plt_expected_cum_reward
-from policies import LaxPolicyModel
+from lax.policies import LaxPolicyModel
 from common import calc
 from common.util import set_global_seeds
 
@@ -42,63 +42,10 @@ class Model(object):
         return cv_grad
 
     def update_cv(self, cv_grad):
-        self.train_policy_model.cv_optim.zero_grad()
-        for params, cg in zip(self.train_policy_model.cv_net.parameters(), cv_grad):
-            params.backward(cg, create_graph=True, retain_graph=True)
-        self.train_policy_model.cv_optim.step()
-
-    def get_policy_grads_(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
-        advs = rewards - value
-
-        # net_mean, net_std = self.train_policy_model.policy(obs)
-        # actions = torch.distributions.Normal(net_mean, net_std).rsample()
-        cv = self.step_policy_model.cv_net(torch.cat([vf_in, actions], dim=1))
-        ddiff_loss = torch.mean(cv, dim=0)
-        # ddiff_loss = cv / cv.shape[0] + 2.
-
-        dlogp_mean = (actions.detach() - net_mean) / torch.square(net_std)
-        dlogp_std = -1 / net_std + 1 / torch.pow(net_std, 3) * torch.square(actions.detach() - net_mean)
-
-        # pi_loss_mean = -((advs[:,None] - cv) * dlogp_mean) / advs.shape[0]
-        # pi_loss_std = -((advs[:,None] - cv) * dlogp_std) / advs.shape[0]
-        # pi_loss_mean = -((advs[:, None] - cv) * dlogp_mean).mean(0)
-        # pi_loss_std = -((advs[:,None] - cv) * dlogp_std).mean(0)
-        pi_loss_mean = -((advs[:, None]) * dlogp_mean).mean(0)
-        pi_loss_std = -((advs[:,None]) * dlogp_std).mean(0)
-
-        pg_grads_mean = torch.autograd.grad(pi_loss_mean, self.step_policy_model.policy.net.parameters(),
-                                            grad_outputs=torch.ones_like(pi_loss_mean),
-                                            create_graph=True, retain_graph=True)
-        pg_grads_std = torch.autograd.grad(pi_loss_std, self.step_policy_model.policy.log_std,
-                                           grad_outputs=torch.ones_like(pi_loss_std),
-                                           create_graph=True, retain_graph=True)
-
-        """
-        log_prob = torch.distributions.Normal(net_mean, net_std).log_prob(actions)
-        dlog_prob = -((advs[:, None] - cv) * log_prob).mean(dim=0)
-
-        # TODO: does pytorch automatically build 2nd order derivative?
-        pg_grads_mean = torch.autograd.grad(dlog_prob, self.step_policy_model.policy.net.parameters(),
-                                            grad_outputs=torch.ones_like(dlog_prob),
-                                            create_graph=True, retain_graph=True)
-        pg_grads_std = torch.autograd.grad(dlog_prob, self.step_policy_model.policy.log_std,
-                                           grad_outputs=torch.ones_like(dlog_prob),
-                                           create_graph=True, retain_graph=True)
-        """
-
-        # ddiff_grads_mean = torch.autograd.grad(ddiff_loss, self.step_policy_model.policy.net.parameters(),
-        #                                        grad_outputs=torch.ones_like(ddiff_loss),
-        #                                        create_graph=True, retain_graph=True)
-        # ddiff_grads_std = torch.autograd.grad(ddiff_loss, self.step_policy_model.policy.log_std,
-        #                                       grad_outputs=torch.ones_like(ddiff_loss),
-        #                                       create_graph=True, retain_graph=True)
-
-        # pg_grads_mean = [pg - dg for pg, dg in zip(pg_grads_mean, ddiff_grads_mean)]
-        # pg_grads_std = [pg - dg for pg, dg in zip(pg_grads_std, ddiff_grads_std)]
-
-        pg_grads = pg_grads_std + pg_grads_mean
-
-        return pg_grads
+        self.step_policy_model.cv_optim.zero_grad()
+        for params, cg in zip(self.step_policy_model.cv_net.parameters(), cv_grad):
+            params.backward(cg, retain_graph=True)
+        self.step_policy_model.cv_optim.step()
 
     def get_policy_grads(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
         advs = rewards - value
@@ -152,7 +99,7 @@ class Model(object):
     def update_policy(self, pg):
         self.train_policy_model.cv_optim.zero_grad()
         for params, _pg in zip(self.train_policy_model.policy.parameters(), pg):
-            params.backward(_pg, create_graph=True, retain_graph=True)
+            params.backward(_pg, retain_graph=True)
         self.train_policy_model.policy_optim.step()
 
 
@@ -195,7 +142,7 @@ class RolloutRunner(object):
             scaled_act = np.clip(scaled_act, a_min=self.env.action_space.low, a_max=self.env.action_space.high)
             ob, reward, done, _ = self.env.step(scaled_act)
             if self.animate:
-                env.render()
+                self.env.render()
 
             if self.obfilter: ob = self.obfilter(ob.squeeze())
             ob = to_torch(ob)
@@ -223,7 +170,7 @@ class RolloutRunner(object):
 
 
 def learn(env: gym.Env, seed, total_steps=int(10e6),
-          cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=200,
+          cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=2500,
           kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False):
 
     set_global_seeds(seed)
@@ -232,8 +179,8 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
     obfilter = ZFilter(env.observation_space.shape) if obfilter else None
 
     max_pathlength = env.spec.max_episode_steps
-    obs_dim = policy.obs_dim
-    act_dim = policy.act_dim
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n if hasattr(env.action_space, 'n') else env.action_space.shape[0]
 
     model = Model(obs_dim, act_dim, cv_opt_epochs, vf_opt_epochs)
     runner = RolloutRunner(env, model.step_policy_model, max_pathlength, gamma=gamma, lamb=lamb, obfilter=obfilter,
@@ -317,6 +264,12 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
                     cvg /= len(cv_grads)
                     cv_gs.append(cvg)
                 model.update_cv(cv_gs)
+
+                cv_grads = []
+                for p in range(len(paths)):
+                    cv_grads.append(
+                        model.get_cv_grads(paths[p]["observation"], paths[p]["action"], vtargs[p], vf_ins[p], values[p].detach(),
+                                           paths[p]["act_mean"], paths[p]["act_std"]))
         else:
             adv = rewards_n - values_n
             # action is detached
@@ -358,7 +311,7 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
         model.step_policy_model.policy_optim.zero_grad()
         model.train_policy_model.policy_optim.zero_grad()
 
-        plot_path = '/Users/kek/Documents/informatik/master/semester_3/thesis/code/bpttv-lax/evals/plots'
+        plot_path = 'evals/plots'
         plt_expected_cum_reward(plot_path, exp_rews_means, exp_rews_stds)
         update_step_count += 1
 
@@ -381,4 +334,4 @@ if __name__ == '__main__':
     act_dim = env.action_space.n if hasattr(env.action_space, 'n') else env.action_space.shape[0]
     policy = LaxPolicyModel(obs_dim, act_dim, p_hidden=64, vf_hidden=64, cv_hidden=64, p_lr=1e-4)
 
-    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, cv_opt_epochs=25, lax=True, gamma=0.97, lamb=0.99, animate=True)
+    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, cv_opt_epochs=5, lax=True, gamma=0.97, lamb=0.99, animate=True)
