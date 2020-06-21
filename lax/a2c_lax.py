@@ -171,7 +171,7 @@ class RolloutRunner(object):
 
 def learn(env: gym.Env, seed=None, total_steps=int(10e6),
           cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=2500,
-          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False, save_loc=None):
+          kl_thresh=0.002, obfilter=False, lax=True, update_targ_interval=2, animate=False, save_loc=None):
 
     if seed:
         set_global_seeds(seed)
