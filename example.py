@@ -14,5 +14,5 @@ if __name__ == '__main__':
     # env = GentlyTerminating(gym.make('BipedalWalkerHardcore-v2'))
     # env = GentlyTerminating(gym.make('HalfCheetah-v3'))
 
-    learn(env, seed=seed, obfilter=False, tsteps_per_batch=2500, cv_opt_epochs=5, lax=True, gamma=0.95, lamb=0.97,
+    learn(env, seed=seed, obfilter=True, tsteps_per_batch=25, cv_opt_epochs=5, lax=True, gamma=0.95, lamb=0.97,
           animate=True)

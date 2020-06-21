@@ -18,7 +18,7 @@ to_npy = lambda arr: arr.detach().double().cpu().numpy()
 
 class Model(object):
 
-    def __init__(self, obs_dim, act_dim, cv_epochs, vf_epochs):
+    def __init__(self, obs_dim, act_dim, cv_epochs, vf_epochs, obfilter=None):
 
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -26,7 +26,7 @@ class Model(object):
         self.vf_epochs = vf_epochs
         self.train_policy_model = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-4)
         self.step_policy_model = deepcopy(self.train_policy_model)
-        # self.step_policy_model = LaxPolicyModel(obs_dim, act_dim, p_lr=1e-3)
+        self.obfilter = obfilter
 
     def get_cv_grads(self, obs, actions, rewards, vf_in, values, net_mean, net_std):
         advs = rewards - values
@@ -171,7 +171,7 @@ class RolloutRunner(object):
 
 def learn(env: gym.Env, seed=None, total_steps=int(10e6),
           cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=2500,
-          kl_thresh=0.002, obfilter=False, lax=True, update_targ_interval=2, animate=False, save_loc=None):
+          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False, save_loc=None):
 
     if seed:
         set_global_seeds(seed)
@@ -183,7 +183,7 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n if hasattr(env.action_space, 'n') else env.action_space.shape[0]
 
-    model = Model(obs_dim, act_dim, cv_opt_epochs, vf_opt_epochs)
+    model = Model(obs_dim, act_dim, cv_opt_epochs, vf_opt_epochs, obfilter=obfilter)
     runner = RolloutRunner(env, model.step_policy_model, max_pathlength, gamma=gamma, lamb=lamb, obfilter=obfilter,
                            animate=animate)
 
