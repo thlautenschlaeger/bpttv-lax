@@ -10,6 +10,6 @@ setup(name='lax',
       description='Backpropagation through the void LAX',
       author='Thomas Lautenschlaeger',
       author_email='th.la@me.com',
-      install_requires=['numpy', 'scipy', 'matplotlib', 'sklearn'],
+      install_requires=['numpy', 'scipy', 'matplotlib', 'sklearn', 'pytorch'],
       packages=['lax' ],
       include_dirs=[np.get_include()],)

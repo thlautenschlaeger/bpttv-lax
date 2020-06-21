@@ -169,12 +169,13 @@ class RolloutRunner(object):
         return path, vtarget, value, adv_GAE
 
 
-def learn(env: gym.Env, seed, total_steps=int(10e6),
+def learn(env: gym.Env, seed=None, total_steps=int(10e6),
           cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=2500,
-          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False):
+          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False, save_loc=None):
 
-    set_global_seeds(seed)
-    env.seed(seed)
+    if seed:
+        set_global_seeds(seed)
+        env.seed(seed)
 
     obfilter = ZFilter(env.observation_space.shape) if obfilter else None
 
@@ -188,6 +189,7 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
 
     tsteps_so_far = 0
     episode = 0
+    best_exp_mean = -np.Inf
     exp_rews_means = []
     exp_rews_stds = []
 
@@ -266,7 +268,7 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
                 model.update_cv(cv_gs)
 
                 cv_grads = []
-                for p in range(len(paths)):
+                for p, _ in enumerate(paths):
                     cv_grads.append(
                         model.get_cv_grads(paths[p]["observation"], paths[p]["action"], vtargs[p], vf_ins[p], values[p].detach(),
                                            paths[p]["act_mean"], paths[p]["act_std"]))
@@ -315,23 +317,12 @@ def learn(env: gym.Env, seed, total_steps=int(10e6),
         plt_expected_cum_reward(plot_path, exp_rews_means, exp_rews_stds)
         update_step_count += 1
 
+        if save_loc:
+            torch.save(model, open(save_loc + "/" + "checkpoint_" + env.spec.id + "_model_.pkl", "wb"))
 
-if __name__ == '__main__':
+            if best_exp_mean < mean_reward:
+                best_exp_mean = mean_reward
+                torch.save(model,
+                           open(save_loc + "/" + "best_" + env.spec.id + "_model_" + str(update_step_count) + "_epochs_.pkl", "wb"))
 
-    seed = 42
-    set_global_seeds(seed)
-    # env = gym.make('Pendulum-v0')
-    # env = GentlyTerminating(gym.make('CartpoleStabShort-v0'))
-    # env = GentlyTerminating(gym.make('Qube-100-v0'))
-    # env = GentlyTerminating(gym.make('CartpoleSwingShort-v0'))
-    env = GentlyTerminating(gym.make('LunarLanderContinuous-v2'))
-    # env = GentlyTerminating(gym.make('BipedalWalker-v2'))
-    # env = GentlyTerminating(gym.make('BipedalWalkerHardcore-v2'))
-    # env = GentlyTerminating(gym.make('HalfCheetah-v3'))
-
-    env.seed(seed)
-    obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.n if hasattr(env.action_space, 'n') else env.action_space.shape[0]
-    policy = LaxPolicyModel(obs_dim, act_dim, p_hidden=64, vf_hidden=64, cv_hidden=64, p_lr=1e-4)
-
-    learn(env, 1337, obfilter=True, tsteps_per_batch=2500, cv_opt_epochs=5, lax=True, gamma=0.97, lamb=0.99, animate=True)
+    return model
