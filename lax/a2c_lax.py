@@ -28,10 +28,10 @@ class Model(object):
         self.step_policy_model = deepcopy(self.train_policy_model)
         self.obfilter = obfilter
 
-    def get_cv_grads(self, obs, actions, rewards, vf_in, values, net_mean, net_std):
+    def get_cv_grads(self, obs, actions, rewards, vf_in, values, net_mean, net_std, advs):
         advs = rewards - values
 
-        pg_grads = self.get_policy_grads(obs, actions, rewards, vf_in, values, net_mean, net_std)
+        pg_grads = self.get_policy_grads(obs, actions, rewards, vf_in, values, net_mean, net_std, advs)
 
         cv_grad = torch.cat([torch.reshape(p, [-1]) for p in pg_grads], 0)
         cv_loss = torch.square(cv_grad).mean(0)
@@ -47,11 +47,9 @@ class Model(object):
             params.backward(cg, retain_graph=True)
         self.step_policy_model.cv_optim.step()
 
-    def get_policy_grads(self, obs, actions, rewards, vf_in, value, net_mean, net_std):
+    def get_policy_grads(self, obs, actions, rewards, vf_in, value, net_mean, net_std, advs):
         advs = rewards - value
 
-        # net_mean, net_std = self.train_policy_model.policy(obs)
-        # actions = torch.distributions.Normal(net_mean, net_std).rsample()
         cv = self.step_policy_model.cv_net(torch.cat([vf_in, actions], dim=1))
         ddiff_loss = torch.mean(cv, dim=0)
 
@@ -129,7 +127,7 @@ class RolloutRunner(object):
 
         obs, acts, ac_dist_mean, ac_dist_std, logps, rewards = [], [], [], [], [], []
 
-        for _ in range(self.max_path_len):
+        for i in range(self.max_path_len):
             state = torch.cat([ob, prev_ob], -1)
             obs.append(state)
             sampled_ac, log_prob, mean, std = self.step_policy_model.act(state)
@@ -148,8 +146,12 @@ class RolloutRunner(object):
             ob = to_torch(ob)
             rewards.append(reward)
 
-            if done:
+            if done or i > 3000:
+                done = True
                 break
+
+            # if done:
+            #     break
 
         self._num_rollouts += 1
         self._num_steps += len(rewards)
@@ -162,7 +164,7 @@ class RolloutRunner(object):
         rew_t = path["reward"]
         value = self.step_policy_model.predict_value(path).detach()
         vtarget = to_torch((calc.discount(np.append(to_npy(rew_t), 0.0 if path["terminated"] else value[-1]), self.gamma)[:-1]).copy())
-        vpred_t = torch.cat([value, torch.zeros([1])]) if path["terminated"] else torch.cat([value, value[-1]])
+        vpred_t = torch.cat([value, torch.zeros([1])]) if path["terminated"] else torch.cat([value, value[-1][None]])
         delta_t = rew_t + self.gamma * vpred_t[1:] - vpred_t[:-1]
         adv_GAE = to_torch(calc.discount(to_npy(delta_t), self.gamma * self.lamb).copy())
 
@@ -171,7 +173,8 @@ class RolloutRunner(object):
 
 def learn(env: gym.Env, seed=None, total_steps=int(10e6),
           cv_opt_epochs=5, vf_opt_epochs=25, gamma=0.99, lamb=0.97, tsteps_per_batch=2500,
-          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2, animate=False, save_loc=None):
+          kl_thresh=0.002, obfilter=True, lax=True, update_targ_interval=2,
+          check_kl=True, animate=False, save_loc=None):
 
     if seed:
         set_global_seeds(seed)
@@ -215,7 +218,7 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
                 std_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
                 vf_in = model.step_policy_model.preproc(path)
                 cv_grad = model.get_cv_grads(path["observation"], path["action"], vtarget, vf_in, value.detach(),
-                                                   path["act_mean"], path["act_std"])
+                                                   path["act_mean"], path["act_std"], std_adv)
                 cv_grads.append(cv_grad)
                 std_advs.append(std_adv)
                 vf_ins.append(vf_in)
@@ -254,7 +257,7 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
 
         vf_loss = model.update_vf(x, rewards_n)
         if lax:
-            pg = model.get_policy_grads(ob_no, action_na, rewards_n, x, values_n, oldac_mean, oldac_std)
+            pg = model.get_policy_grads(ob_no, action_na, rewards_n, x, values_n, oldac_mean, oldac_std, standardized_adv_n)
             model.update_policy(pg)
 
             for r in range(cv_opt_epochs):
@@ -271,7 +274,7 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
                 for p, _ in enumerate(paths):
                     cv_grads.append(
                         model.get_cv_grads(paths[p]["observation"], paths[p]["action"], vtargs[p], vf_ins[p], values[p].detach(),
-                                           paths[p]["act_mean"], paths[p]["act_std"]))
+                                           paths[p]["act_mean"], paths[p]["act_std"], std_advs[p]))
         else:
             adv = rewards_n - values_n
             # action is detached
@@ -289,22 +292,22 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
             model.train_policy_model.policy_optim.step()
             print("Policy loss: {} -|- vf loss: {}".format(ploss.detach().cpu().numpy(), vf_loss))
 
+        if check_kl:
+            kl = model.train_policy_model.compute_kl(ob_no, oldac_mean, oldac_std)
 
-        kl = model.train_policy_model.compute_kl(ob_no, oldac_mean, oldac_std)
+            min_stepsize = np.float32(1e-8)
+            max_stepsize = np.float32(1e0)
 
-        min_stepsize = np.float32(1e-8)
-        max_stepsize = np.float32(1e0)
-
-        if kl > kl_thresh * 2:
-            for g in model.train_policy_model.policy_optim.param_groups:
-                g['lr'] = max(min_stepsize, g['lr'] / 1.5)
-            print("KL too high # {}".format(kl))
-        elif kl < kl_thresh / 2:
-            for g in model.train_policy_model.policy_optim.param_groups:
-                g['lr'] = min(max_stepsize, g['lr'] * 1.5)
-            print("KL too low # {}".format(kl))
-        else:
-            print("KL is nice # {}".format(kl))
+            if kl > kl_thresh * 2:
+                for g in model.train_policy_model.policy_optim.param_groups:
+                    g['lr'] = max(min_stepsize, g['lr'] / 1.5)
+                print("KL too high # {}".format(kl))
+            elif kl < kl_thresh / 2:
+                for g in model.train_policy_model.policy_optim.param_groups:
+                    g['lr'] = min(max_stepsize, g['lr'] * 1.5)
+                print("KL too low # {}".format(kl))
+            else:
+                print("KL is nice # {}".format(kl))
 
         # if (update_targ_interval % (update_step_count+1)) == 0:
         model.step_policy_model.policy.load_state_dict(model.train_policy_model.policy.state_dict())
@@ -318,7 +321,8 @@ def learn(env: gym.Env, seed=None, total_steps=int(10e6),
         update_step_count += 1
 
         if save_loc:
-            torch.save(model, open(save_loc + "/" + "checkpoint_" + env.spec.id + "_model_.pkl", "wb"))
+            torch.save(model, open(save_loc + "/" + "checkpoint_" + env.spec.id + "_model_" + str(update_step_count) + "_epochs_.pkl", "wb"))
+            torch.save({"expec_mean": exp_rews_means, "expec_std": exp_rews_stds}, open(save_loc + "/" + "rewards_" + env.spec.id + "_model_seed" + str(seed) + ".pkl", "wb"))
 
             if best_exp_mean < mean_reward:
                 best_exp_mean = mean_reward

@@ -97,3 +97,9 @@ class LaxPolicyModel:
         old_dist = torch.distributions.Normal(old_act_mu, old_act_std)
         new_dist = torch.distributions.Normal(*params)
         return torch.distributions.kl.kl_divergence(old_dist, new_dist).mean()
+
+
+class StructuredLaxPolicy:
+
+    def __init__(self):
+        pass

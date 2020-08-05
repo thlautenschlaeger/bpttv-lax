@@ -11,5 +11,5 @@ setup(name='lax',
       author='Thomas Lautenschlaeger',
       author_email='th.la@me.com',
       install_requires=['numpy', 'scipy', 'matplotlib', 'sklearn', 'pytorch'],
-      packages=['lax' ],
+      packages=['lax'],
       include_dirs=[np.get_include()],)

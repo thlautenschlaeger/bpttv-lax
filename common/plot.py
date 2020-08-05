@@ -19,7 +19,6 @@ def plt_expected_cum_reward(path, expected_reward, std):
     ax.set_ylabel('Expected Cumulative Reward')
     ax.grid(alpha=0.5, linestyle='-')
 
-
-    fig.savefig(path+'/reward.png')
+    fig.savefig(path+'/lax-false-reward.png')
     plt.clf()
     plt.close('all')
